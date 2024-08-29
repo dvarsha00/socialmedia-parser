@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Instagram1 Bot</title>
+    <style>
+      #logs {
+        border: 1px solid #ccc;
+        padding: 10px;
+        height: 300px;
+        overflow-y: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Instagram Bot</h1>
+    <form id="loginForm">
+      <div>
+        <label for="username">Username:</label>
+        <input type="text" id="username" name="username" required />
+      </div>
+      <div>
+        <label for="password">Password:</label>
+        <input type="password" id="password" name="password" required />
+      </div>
+      <button type="submit" id="submitBtn">Start Bot</button>
+    </form>
+
+    <div id="result"></div>
+    <div id="logs"></div>
+
+    <script>
+      const { ipcRenderer } = require("electron");
+
+      document
+        .getElementById("loginForm")
+        .addEventListener("submit", async (e) => {
+          e.preventDefault(); // Prevent the form from submitting the traditional way
+
+          const submitButton = document.getElementById("submitBtn");
+          submitButton.disabled = true; // Disable the button to prevent multiple submissions
+
+          const username = document.getElementById("username").value;
+          const password = document.getElementById("password").value;
+
+          try {
+            const result = await ipcRenderer.invoke("start-bot", {
+              username,
+              password,
+            });
+
+            if (result.success) {
+              document.getElementById(
+                "result"
+              ).innerText = `Bot process completed. Screenshot saved as ${result.screenshotFilename}.`;
+              document.getElementById("loginForm").reset(); // Clear the form fields
+            } else if (
+              result.error &&
+              result.error.includes("2FA code required")
+            ) {
+              // Prompt the user to enter the 2FA code
+              const code = prompt("Enter the 2FA code:");
+              if (code) {
+                // Send the 2FA code to the main process
+                ipcRenderer.send("two-factor-code", code);
+              } else {
+                document.getElementById("result").innerText =
+                  "2FA code was not provided.";
+              }
+            } else {
+              document.getElementById(
+                "result"
+              ).innerText = `Error: ${result.error}`;
+            }
+          } catch (error) {
+            document.getElementById(
+              "result"
+            ).innerText = `Unexpected error: ${error.message}`;
+          }
+
+          submitButton.disabled = false; // Re-enable the button after the process is complete
+        });
+
+      ipcRenderer.on("update-logs", (event, log) => {
+        const logsDiv = document.getElementById("logs");
+        const logElement = document.createElement("p");
+        logElement.innerText = log;
+        logsDiv.appendChild(logElement);
+        logsDiv.scrollTop = logsDiv.scrollHeight; // Auto-scroll to the bottom
+      });
+
+      ipcRenderer.on("update-2fa-prompt", () => {
+        // Handle additional logic if needed when 2FA prompt is triggered
+      });
+    </script>
+  </body>
+</html>
