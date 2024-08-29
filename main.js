@@ -12,18 +12,20 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
-      preload: __dirname + "/preload.js", // Ensure this is the correct path to your preload script
+      preload: path.join(__dirname, "preload.js"),
     },
   });
 
-  mainWindow.loadFile("index.html");
+  mainWindow.loadFile("index.html").catch((err) => {
+    console.error("Failed to load index.html:", err);
+  });
 }
 
 class InstagramBot {
   constructor(username, password, sendLog) {
     this.username = username;
     this.password = password;
-    this.sendLog = sendLog; // Function to send logs
+    this.sendLog = sendLog;
   }
 
   async init() {
@@ -37,20 +39,31 @@ class InstagramBot {
     await this.page.goto("https://www.instagram.com/accounts/login/", {
       waitUntil: "networkidle2",
     });
-    await this.page.type('input[name="username"]', this.username, { delay: 100 });
-    await this.page.type('input[name="password"]', this.password, { delay: 100 });
+
+    await this.page.type('input[name="username"]', this.username, {
+      delay: 100,
+    });
+    await this.page.type('input[name="password"]', this.password, {
+      delay: 100,
+    });
     await this.page.click('button[type="submit"]');
 
-    await this.page.waitForNavigation({ waitUntil: "networkidle2" }).catch(() => {});
+    await this.page
+      .waitForNavigation({ waitUntil: "networkidle2" })
+      .catch(() => {});
 
-    const twoFactorPrompt = await this.page.$('input[name="verificationCode"]');
-    if (twoFactorPrompt) {
-      this.sendLog("2FA code required. Please enter the 2FA code.");
-      const code = await this.waitForTwoFactorCode(); // Implement this method to get the 2FA code from the user
+    // Check for 2FA page
+    if (this.page.url().includes("two_factor")) {
+      this.sendLog("2FA page detected.");
+      mainWindow.webContents.send("show-2fa-input");
 
-      await this.page.type('input[name="verificationCode"]', code, { delay: 100 });
-      await this.page.click('button[type="submit"]');
+      const code = await this.waitForTwoFactorCode();
+      await this.page.type('input[name="verificationCode"]', code, {
+        delay: 100,
+      });
+      await this.page.click('button[type="button"]');
       await this.page.waitForNavigation({ waitUntil: "networkidle2" });
+
       this.sendLog("2FA code entered and submitted.");
     }
 
@@ -61,52 +74,47 @@ class InstagramBot {
     }
   }
 
+  waitForTwoFactorCode() {
+    return new Promise((resolve) => {
+      ipcMain.once("submit-2fa-code", (event, code) => {
+        resolve(code);
+      });
+    });
+  }
+
   async navigateToOwnProfile() {
     this.sendLog("Navigating to own profile...");
-    await this.dismissPopups();
     await this.page.goto(`https://www.instagram.com/${this.username}/`, {
       waitUntil: "networkidle2",
     });
     this.sendLog("Profile page loaded.");
   }
 
-  async dismissPopups() {
-    const dismissSelectors = [
-      "button:contains('Not Now')",
-      "button:contains('Cancel')",
-      "button._a9--",
-    ];
-
-    for (const selector of dismissSelectors) {
-      try {
-        this.sendLog(`Checking for popup with selector: ${selector}`);
-        const elements = await this.page.$$(selector);
-        if (elements.length > 0) {
-          this.sendLog(`Popup found, clicking the button.`);
-          await elements[0].click();
-          await this.page.waitForTimeout(1000); // Wait for a second to ensure the popup is dismissed
-        } else {
-          this.sendLog(`No popup found for selector: ${selector}`);
-        }
-      } catch (e) {
-        this.sendLog(`Error while dismissing popup with selector ${selector}: ${e.message}`);
-      }
-    }
-  }
-
   async takeProfileScreenshot(username) {
     this.sendLog("Taking profile screenshot...");
 
-    // Scroll to the top to capture the profile header
+    const profileDir = path.join(__dirname, "files", "instagram", username);
+    await fs.promises.mkdir(profileDir, { recursive: true });
+
     await this.page.evaluate(() => window.scrollTo(0, 0));
     const profileHeaderSelector = "header";
     const profileHeader = await this.page.$(profileHeaderSelector);
+
     if (profileHeader) {
       const profileScreenshotPath = path.join(
-        __dirname, "files", "instagram", username, `${username}_profile_header.png`
+        profileDir,
+        `${username}_profile_header.png`
       );
-      await profileHeader.screenshot({ path: profileScreenshotPath });
-      this.sendLog(`Profile header screenshot saved as ${profileScreenshotPath}.`);
+      try {
+        await profileHeader.screenshot({ path: profileScreenshotPath });
+        this.sendLog(
+          `Profile header screenshot saved as ${profileScreenshotPath}.`
+        );
+      } catch (error) {
+        this.sendLog(
+          `Failed to save screenshot ${profileScreenshotPath}: ${error.message}`
+        );
+      }
     } else {
       this.sendLog("Failed to capture profile header.");
     }
@@ -115,45 +123,96 @@ class InstagramBot {
   async takePostsScreenshot(username) {
     this.sendLog("Taking posts screenshot...");
 
-    // Remove the header section by setting its display to 'none'
+    const postsDir = path.join(__dirname, "files", "instagram", username);
+    await fs.promises.mkdir(postsDir, { recursive: true });
+
     await this.page.evaluate(() => {
-        const header = document.querySelector('header');
-        if (header) {
-            header.style.display = 'none';
-        }
+      const header = document.querySelector("header");
+      if (header) {
+        header.style.display = "none";
+      }
     });
 
-    // Now select the entire body to capture the posts section
-    const postsSection = await this.page.$('body');
+    const postsSection = await this.page.$("body");
 
     if (postsSection) {
-        const dirPath = path.join(__dirname, "files", "instagram", username);
-        await fs.promises.mkdir(dirPath, { recursive: true });
+      let previousHeight;
+      let screenshotIndex = 1;
 
-        let previousHeight;
-        let screenshotIndex = 1;
+      while (true) {
+        previousHeight = await this.page.evaluate(
+          () => document.body.scrollHeight
+        );
+        const postScreenshotPath = path.join(
+          postsDir,
+          `${username}_posts_part_${screenshotIndex}.png`
+        );
+        await postsSection.screenshot({ path: postScreenshotPath });
+        this.sendLog(`Posts screenshot saved as ${postScreenshotPath}.`);
 
-        while (true) {
-            previousHeight = await this.page.evaluate(() => document.body.scrollHeight);
-            const postScreenshotPath = path.join(
-                dirPath,
-                `${username}_posts_part_${screenshotIndex}.png`
-            );
-            await postsSection.screenshot({ path: postScreenshotPath });
-            this.sendLog(`Posts screenshot saved as ${postScreenshotPath}.`);
+        await this.page.evaluate(() => window.scrollBy(0, window.innerHeight));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const currentHeight = await this.page.evaluate(
+          () => document.body.scrollHeight
+        );
+        if (currentHeight === previousHeight) break;
 
-            await this.page.evaluate(() => window.scrollBy(0, window.innerHeight));
-            await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait for 2 seconds
-            const currentHeight = await this.page.evaluate(() => document.body.scrollHeight);
-            if (currentHeight === previousHeight) break;
-
-            screenshotIndex++;
-        }
+        screenshotIndex++;
+      }
     } else {
-        this.sendLog("Failed to capture posts section.");
+      this.sendLog("Failed to capture posts section.");
     }
-}
+  }
 
+  async navigateToMessages() {
+    this.sendLog("Navigating to messages...");
+    await this.page.goto("https://www.instagram.com/direct/inbox/", {
+      waitUntil: "networkidle2",
+    });
+    this.sendLog("Messages page loaded.");
+  }
+
+  async takeConversationScreenshots(username) {
+    this.sendLog("Taking conversation screenshots...");
+
+    const messagesDir = path.join(__dirname, "files", "instagram", username);
+    await fs.promises.mkdir(messagesDir, { recursive: true });
+
+    // Take a screenshot of the list of conversations
+    const conversationListScreenshotPath = path.join(
+      messagesDir,
+      `${username}_conversation_list.png`
+    );
+    await this.page.screenshot({ path: conversationListScreenshotPath });
+    this.sendLog(
+      `Conversation list screenshot saved as ${conversationListScreenshotPath}.`
+    );
+
+    const conversations = await this.page.$$("._abm0 ._ab6-");
+    if (conversations.length > 0) {
+      const recentConversations = conversations.slice(0, 3);
+
+      for (let i = 0; i < recentConversations.length; i++) {
+        this.sendLog(`Opening conversation with member ${i + 1}...`);
+        await recentConversations[i].click();
+        await this.page.waitForTimeout(2000);
+
+        const conversationScreenshotPath = path.join(
+          messagesDir,
+          `${username}_conversation_${i + 1}.png`
+        );
+        await this.page.screenshot({ path: conversationScreenshotPath });
+        this.sendLog(
+          `Conversation screenshot saved as ${conversationScreenshotPath}.`
+        );
+
+        await this.page.goBack({ waitUntil: "networkidle2" });
+        await this.page.waitForTimeout(2000);
+      }
+    } else {
+      this.sendLog("No conversations found.");
+    }
+  }
 
   async close() {
     this.sendLog("Closing browser...");
@@ -162,12 +221,13 @@ class InstagramBot {
   }
 }
 
+// The rest of the code remains the same...
 
 ipcMain.handle("start-bot", async (event, { username, password }) => {
   const logs = [];
   const sendLog = (message) => {
     logs.push(message);
-    mainWindow.webContents.send("update-logs", message); // Send log message to renderer
+    mainWindow.webContents.send("update-logs", message);
   };
 
   try {
@@ -176,13 +236,13 @@ ipcMain.handle("start-bot", async (event, { username, password }) => {
     sendLog("Bot initialized.");
     await bot.login();
     await bot.navigateToOwnProfile();
-
-    // Capture the profile header
     await bot.takeProfileScreenshot(username);
-    
-    // Capture the posts section
     await bot.takePostsScreenshot(username);
-    
+
+    // Navigate to messages and capture conversations
+    await bot.navigateToMessages();
+    await bot.takeConversationScreenshots(username);
+
     await bot.close();
 
     sendLog("Bot process completed.");
@@ -193,7 +253,6 @@ ipcMain.handle("start-bot", async (event, { username, password }) => {
     return { success: false, error: error.message };
   }
 });
-
 
 app.whenReady().then(createWindow);
 
