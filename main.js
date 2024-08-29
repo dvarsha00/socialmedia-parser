@@ -83,7 +83,7 @@ class InstagramBot {
   }
 
   async navigateToOwnProfile() {
-    this.sendLog("Navigating to own profile...");
+    this.sendLog("Navigating to profile...");
     await this.page.goto(`https://www.instagram.com/${this.username}/`, {
       waitUntil: "networkidle2",
     });
@@ -169,7 +169,27 @@ class InstagramBot {
     await this.page.goto("https://www.instagram.com/direct/inbox/", {
       waitUntil: "networkidle2",
     });
+  
+    // Check if the notifications popup appears
+    const notificationsPopupSelector = "._a9-v"; // Selector for the popup container
+    const turnOnButtonSelector = "button._a9--._a9_1"; // Selector for the "Turn On" button
+  
+    try {
+      await this.page.waitForSelector(notificationsPopupSelector, { timeout: 5000 });
+      this.sendLog("Notifications popup detected.");
+      await this.page.click(turnOnButtonSelector);
+      this.sendLog("Clicked 'Turn On' button for notifications.");
+    } catch (error) {
+      this.sendLog("No notifications popup detected or failed to interact with it.");
+    }
+  
     this.sendLog("Messages page loaded.");
+  }
+  
+  
+
+  async delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async takeConversationScreenshots(username) {
@@ -188,29 +208,38 @@ class InstagramBot {
       `Conversation list screenshot saved as ${conversationListScreenshotPath}.`
     );
 
-    const conversations = await this.page.$$("._abm0 ._ab6-");
+    // Updated selector to target conversation items
+    const conversationSelector = 'div[role="listitem"]';
+    await this.page.waitForSelector(conversationSelector, { timeout: 5000 });
+
+    const conversations = await this.page.$$(conversationSelector);
+    
     if (conversations.length > 0) {
       const recentConversations = conversations.slice(0, 3);
 
       for (let i = 0; i < recentConversations.length; i++) {
-        this.sendLog(`Opening conversation with member ${i + 1}...`);
+        this.sendLog(`Opening conversation ${i + 1}...`);
+        
+        // Click the conversation item
         await recentConversations[i].click();
-        await this.page.waitForTimeout(2000);
+        await this.delay(2000); // Wait for conversation to load
 
+        // Take screenshot of the conversation
         const conversationScreenshotPath = path.join(
           messagesDir,
           `${username}_conversation_${i + 1}.png`
         );
         await this.page.screenshot({ path: conversationScreenshotPath });
         this.sendLog(
-          `Conversation screenshot saved as ${conversationScreenshotPath}.`
+          `Conversation ${i + 1} screenshot saved as ${conversationScreenshotPath}.`
         );
 
-        await this.page.goBack({ waitUntil: "networkidle2" });
-        await this.page.waitForTimeout(2000);
+        // Go back to the conversation list
+        await this.page.click('a[href="/direct/inbox/"]');
+        await this.delay(5000); // Wait for the list to reload
       }
     } else {
-      this.sendLog("No conversations found.");
+      this.sendLog("No conversations found. Please check the selector or page structure.");
     }
   }
 
